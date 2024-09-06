@@ -1,6 +1,8 @@
+import hashlib
 import json
 import uuid
 
+from django.core.cache import cache
 from django.http import JsonResponse
 from celery.result import AsyncResult
 from django.views.decorators.csrf import csrf_exempt
@@ -23,11 +25,19 @@ def start_task(request):
         if not items:
             return JsonResponse({'error': 'No items provided'}, status=400)
 
+        # Generate an idempotency key based on user and items
+        idempotency_key = hashlib.sha256(f'{user_id}-{str(items)}'.encode()).hexdigest()
+        # Check if the task has already been processed (idempotency check)
+        if cache.get(idempotency_key):
+            return JsonResponse({'error': 'Your task already processed'}, status=200)
+        else:
+            cache.set(idempotency_key, 'processed', timeout=300)  # Cached for 5m
+
         # Start Celery task
-        task = process_items.apply_async(args=[items, user_id])
+        task = process_items.apply_async(args=[items, idempotency_key])
 
         # Return task_id in the response
-        return JsonResponse({'task_id': task.id}, status=202)
+        return JsonResponse({'task_id': task.id, "message": 'Your task already processed'}, status=202)
 
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
