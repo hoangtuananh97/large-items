@@ -287,6 +287,7 @@ API documentation is available via Swagger UI:
 
 1. Run the application
 2. Access Swagger UI at `http://localhost:8080/swagger/`
+3. For the WebSocket endpoint, connect to `ws://<Domain>:<port>/ws/progress/`
 
 Here you can explore and test all available API endpoints.
 
