@@ -62,17 +62,12 @@ Before starting the task, check if a similar task is already running for the use
 **Task Locking Example (`views.py`)**:
 ```python
 # views.py
-from celery.result import AsyncResult
-from .tasks import process_items
-from django.http import JsonResponse
-import redis
-
 # Redis client to manage locks
-redis_client = redis.StrictRedis(host='localhost', port=6379, db=0)
+redis_client = redis.Redis(host='localhost', port=6379, db=0)
 
 def start_task(request):
     user_id = request.user.id
-    lock_key = f"user:{user_id}:task_lock"
+    lock_key = f"user:{user_id}:lock"
 
     # Check if the user already has a task running
     if redis_client.get(lock_key):
@@ -90,8 +85,12 @@ def start_task(request):
 
 - **Redis lock (`redis_client.set()`)**: Sets a lock for the user to prevent duplicate task submissions. The lock expires after a set time (e.g., 5 minutes).
 - **Unlocking**: When the task completes, remove the lock. You can add this to the task's `on_success` or `on_failure` hook.
+- **Let's check detail in `items/views.py`**
+- 
+##### Option 2. Implement idempotency (Using Cache or redis) checks to ensure that the same task is not processed multiple times.
+- I implemented in `items/views.py`. About basically, I used `cache` to store the key of the task. If the key is already in the cache, it will return the result of the task. If not, it will process the task and store the key in the cache.
 
-##### Option 2. Implement idempotency checks to ensure that the same task is not processed multiple times.
+##### Option 3. Implement idempotency checks to ensure that the same task is not processed multiple times.
 
 To implement idempotency checks in Django to ensure the same task isn't processed multiple times, we'll use the concept of idempotency keys.
 1. **Create a Model for Idempotency Key (`Model.py`)**
@@ -115,6 +114,9 @@ class IdempotencyKey(models.Model):
 - The `key` (to uniquely identify each request) (e.g: UUID,...).
 - The `status` of the task.
 - The `result` of the operation, if it completes successfully.
+
+##### Option 4. Lock row in database to prevent parallel requests
+- We can use `select_for_update` to lock the row in the database. This will prevent parallel requests from updating the same row simultaneously.
 
 2. **Middleware for Idempotency Key (`middleware.py`)**
 We can create a middleware that checks for the presence of an `Idempotency-Key` header in the request. If the key exists, it checks the database for the key's status and returns the appropriate response.
@@ -181,7 +183,7 @@ def process_items(self, idempotency_key):
 4. **Using the Idempotency Key in the Request**
 When making a request to the API, include the `Idempotency-Key` header with a unique value for each request. This key will be used to track the status of the task.
 
-#### **Step 3: Task Progress Tracking**
+#### **Step 3: Task Progress Tracking (BackEnd)**
 Celery’s `self.update_state` allows tracking the progress of the task. Users can periodically query an API endpoint to check the progress of the task.
 
 **Task Progress API (`views.py`)**:
@@ -212,7 +214,7 @@ def get_task_progress(request, task_id):
 - **`task.state`**: Returns the current state of the task (`PENDING`, `PROGRESS`, `SUCCESS`, etc.).
 - **`task.info`**: Retrieves the progress information (e.g., current items processed and total items).
 
-#### **Step 4: Optional - Real-time Feedback Using WebSockets**
+#### **Step 4: Optional - Real-time Feedback Using WebSockets (BackEnd)**
 Instead of polling, you can push real-time progress updates to the frontend using WebSockets.
 
 **WebSocket Consumer for Progress Updates (`consumers.py`)**:
@@ -257,31 +259,217 @@ def process_items(self, items, user_channel_name):
     return {'status': 'completed', 'total_items_processed': total}
 ```
 
-The frontend can then subscribe to WebSocket events and update the progress bar in real-time.
+### **Progress Tracking and Immediate Feedback (FrontEnd)**
+- `WebSockets` can be used to receive real-time progress updates from the server.
+- `Long polling` can be used to periodically check the task progress.
+- `Short polling` can be used to check the task status at regular intervals.
+- `Http2.0` or `Http3.0` can be used to handle multiple requests at the same time.
 
 ---
 
-### **Alternative Solutions**
+### **Pros and Cons**
+Let's break down the **pros and cons** for each solution discussed in the context of handling long-running tasks, preventing parallel requests, and providing progress feedback.
 
-1. **Polling Only**: If WebSockets are not needed, simply rely on polling via the API. This is simpler to implement but less efficient for long-running tasks.
+---
+
+### **Solution 1: Asynchronous Task Processing with Celery**
+
+#### **Pros**:
+1. **Scalability**: 
+   - Celery allows for the execution of many background tasks in parallel without blocking the web server.
+   - It can handle multiple workers and distribute the load efficiently.
    
-2. **Database-based Locking**: Instead of Redis, task locking can be done using a database model that tracks running tasks per user. This adds some overhead but can be used if Redis is not available.
+2. **Decouples tasks from the request/response cycle**:
+   - Long-running tasks are offloaded to Celery workers, ensuring that the web server doesn’t time out or get overburdened.
+
+3. **Task state tracking**:
+   - Celery provides built-in task states (`PENDING`, `PROGRESS`, `SUCCESS`, `FAILURE`), allowing real-time task status updates.
+
+4. **Fault tolerance**:
+   - Celery can handle failed tasks and retry them based on configuration, making it highly reliable.
+
+#### **Cons**:
+1. **Complex setup**:
+   - Requires additional infrastructure such as Celery workers and message brokers (e.g., Redis or RabbitMQ).
+   
+2. **Maintenance overhead**:
+   - More components to monitor, scale, and maintain (e.g., Celery workers, broker, and result backend).
+   
+3. **No real-time feedback by default**:
+   - Celery alone doesn’t provide real-time progress updates unless explicitly tracked using `self.update_state`, requiring extra development effort.
 
 ---
 
-### **Considerations and Trade-offs**
+### **Solution 2: Task Locking Mechanism (Using Redis or Database)**
 
-- **Performance**: Celery and Redis are highly scalable, making them suitable for handling multiple background tasks. However, WebSocket real-time updates could add extra complexity.
-- **User Experience**: Polling provides basic feedback, while WebSockets offer real-time updates, improving the user experience.
-- **Task Locking**: The lock ensures that users don’t submit parallel jobs, preventing potential resource exhaustion or duplicate processing.
-  
+#### **Option 1: Redis-based Task Locking**
+
+##### **Pros**:
+1. **Prevents parallel requests**:
+   - The lock ensures that the same user doesn’t submit duplicate or concurrent tasks, reducing resource waste and conflicts.
+   
+2. **Efficient and fast**:
+   - Redis is optimized for fast read/write operations, making it suitable for handling large-scale task locking scenarios.
+   
+3. **Automatic expiration**:
+   - Redis locks can have expiration times, which ensures locks are released even if tasks hang, preventing deadlocks.
+
+##### **Cons**:
+1. **Increased infrastructure complexity**:
+   - Requires Redis to be set up and properly managed alongside the existing infrastructure.
+
+2. **Possible race conditions**:
+   - If not handled properly, race conditions might arise when acquiring or releasing locks in high-concurrency environments.
+
 ---
 
-### **Final Summary**
+#### **Option 2: Database-based Task Locking (Using `select_for_update`)**
 
-- **Celery** solves the problem of long-running operations by decoupling task execution from the web request.
-- **Redis-based locking** prevents users from submitting duplicate or parallel requests.
-- **Progress tracking** via `self.update_state` in Celery allows you to inform the user of the task's progress, improving confidence and preventing retries.
-- **Real-time feedback** can be achieved via WebSockets, but polling is a simpler alternative.
+##### **Pros**:
+1. **No additional infrastructure**:
+   - Uses the existing database for locking, eliminating the need for Redis or another external service.
 
-This design ensures that long-running tasks are handled asynchronously, parallel requests are prevented, and users receive timely feedback on task progress, all while avoiding the 60-second web server timeout limit.
+2. **Transaction safety**:
+   - The `select_for_update` mechanism ensures that updates to database rows are locked safely, preventing parallel writes.
+
+##### **Cons**:
+1. **Slower performance**:
+   - Database operations are generally slower than Redis, which could impact performance when handling a large number of concurrent tasks.
+
+2. **Database load**:
+   - Locking rows in the database could increase the load on the database, affecting overall application performance.
+
+---
+
+### **Solution 3: Idempotency Checks**
+
+#### **Pros**:
+1. **Prevents duplicate task processing**:
+   - By implementing idempotency keys, you ensure that the same task is not processed multiple times, even if a user retries.
+
+2. **Safe retries**:
+   - Idempotency allows users to retry operations safely without risking resource duplication or data corruption.
+
+#### **Cons**:
+1. **Additional logic and overhead**:
+   - Requires additional logic to handle idempotency keys, including managing storage, validation, and task completion states.
+
+2. **Database or cache dependency**:
+   - Idempotency checks rely on a persistent store (database or cache), which adds to the system complexity and may increase load.
+
+---
+
+### **Solution 4: Progress Feedback to Users (Polling or WebSockets)**
+
+#### **Option 1: Polling**
+
+##### **Pros**:
+1. **Simple implementation**:
+   - Polling is easy to implement and doesn’t require any additional infrastructure like WebSockets.
+
+2. **No need for persistent connections**:
+   - Polling doesn’t require a persistent connection between the client and server, reducing connection overhead.
+
+##### **Cons**:
+1. **Inefficient for long-running tasks**:
+   - Polling at regular intervals adds unnecessary server load, especially if many users are querying the task status frequently.
+
+2. **Delayed feedback**:
+   - Users may not get immediate updates, leading to a less responsive user experience compared to real-time feedback.
+
+---
+
+#### **Option 2: WebSockets**
+
+##### **Pros**:
+1. **Real-time feedback**:
+   - WebSockets provide immediate updates to the user as task progress changes, enhancing the user experience.
+
+2. **Efficient for real-time applications**:
+   - WebSockets are highly efficient for scenarios where continuous updates are needed (e.g., task progress, chat applications).
+
+##### **Cons**:
+1. **Complex setup**:
+   - Requires WebSocket server setup (e.g., Django Channels) and more complex front-end handling compared to polling.
+
+2. **Scalability challenges**:
+   - Maintaining many WebSocket connections for real-time updates can put additional strain on the server, especially if not scaled properly.
+
+3. **Persistent connection overhead**:
+   - WebSockets require persistent connections, which may consume more resources compared to short-lived HTTP requests in polling.
+
+---
+
+### **Summary of Pros and Cons for Each Solution**:
+
+| **Solution**                                | **Pros**                                                                 | **Cons**                                                                 |
+|---------------------------------------------|-------------------------------------------------------------------------|-------------------------------------------------------------------------|
+| **Celery (Asynchronous Task Processing)**   | - Scalable<br>- Fault-tolerant<br>- Offloads tasks from the web server  | - Complex setup<br>- No real-time feedback without extra logic          |
+| **Redis-based Task Locking**                | - Fast and efficient<br>- Prevents parallel requests<br>- Auto-expiration | - Requires Redis infrastructure<br>- Potential race conditions          |
+| **Database-based Task Locking**             | - Uses existing DB<br>- Transaction-safe                                | - Slower performance<br>- Adds load to the database                     |
+| **Idempotency Checks**                      | - Prevents duplicate task submissions<br>- Safe retries                 | - Extra logic required<br>- Depends on cache/database                   |
+| **Polling for Progress Updates**            | - Simple to implement<br>- No persistent connections needed             | - Inefficient for long tasks<br>- Delayed feedback                      |
+| **WebSockets for Real-time Updates**        | - Real-time feedback<br>- Efficient for real-time scenarios             | - Complex setup<br>- Scalability issues with many connections           |
+
+---
+
+### **Best Solutions for Microservices**:
+
+#### **Celery (Asynchronous Task Processing)**:
+- **Pros for Microservices**:
+  - **Scalability**: Microservices can leverage Celery to handle large-scale asynchronous tasks across multiple workers. Each service can independently process tasks in the background, making the overall system more responsive.
+  - **Fault Tolerance**: Celery is well-suited for distributed systems like microservices. Workers are fault-tolerant, and tasks can be retried or delegated to other workers in case of failure, which aligns well with the microservices' resilience goals.
+  - **Decoupling**: Microservices typically require loosely coupled components, and Celery helps decouple long-running operations from the API layer.
+
+- **Cons**:
+  - **Complex Setup**: Requires additional infrastructure such as message brokers (e.g., RabbitMQ, Redis), Celery workers, and task result backends. This introduces complexity in managing multiple components.
+  - **No Real-Time Feedback by Default**: Users won’t receive real-time feedback unless additional logic (e.g., polling, WebSockets) is implemented, which adds complexity.
+
+#### **Redis-based Task Locking**:
+- **Pros for Microservices**:
+  - **Fast and Efficient**: Redis is fast and lightweight, making it an ideal choice for microservices that require efficient task locking or caching solutions.
+  - **Shared Across Services**: In a distributed system, Redis can serve as a central store for task locks, shared across microservices, preventing multiple services from executing the same task in parallel.
+  - **Scalability**: Redis can easily handle a large number of task locks and state management in a microservice architecture with minimal performance impact.
+
+- **Cons**:
+  - **Requires Redis Infrastructure**: The introduction of Redis adds another dependency to the microservice stack, which needs to be managed and scaled.
+  - **Potential Race Conditions**: Handling race conditions correctly requires careful design, particularly when services compete for the same lock or state in Redis.
+
+#### **Database-based Task Locking**:
+- **Pros for Microservices**:
+  - **Existing Infrastructure**: It leverages the existing relational database already used by the microservice, reducing the need for additional infrastructure.
+  - **Transactional Safety**: With `select_for_update`, you can ensure safe task execution in scenarios where data consistency is critical.
+
+- **Cons**:
+  - **Slower Performance**: Using the database for task locking can slow down the system, especially in a high-traffic microservices environment.
+  - **Increased Load**: Adding task locking responsibilities to the database increases the load and may lead to performance bottlenecks in other services relying on the database.
+
+#### **Idempotency Checks**:
+- **Pros for Microservices**:
+  - **Safe Retries**: In microservices, network issues or failures are common, and idempotency ensures that the same task or request isn't executed multiple times, preventing duplicate processing.
+  - **Prevents Data Corruption**: Idempotency keys ensure safe processing, particularly important in distributed systems where retries or duplicate requests might happen due to network failures or race conditions.
+
+- **Cons**:
+  - **Additional Logic**: Requires extra logic to manage idempotency keys and ensure proper validation and expiration. This adds some complexity to microservice implementations.
+  - **Dependency on Cache/Database**: Idempotency keys need to be stored in a persistent store like Redis or a database, adding overhead to the system.
+
+#### **Polling for Progress Updates**:
+- **Pros for Microservices**:
+  - **Simple to Implement**: Polling is a straightforward approach that doesn’t require any complex infrastructure like WebSockets, making it suitable for microservices that don’t need real-time updates.
+  - **No Persistent Connections**: Unlike WebSockets, polling doesn’t require maintaining long-lived connections, which can reduce the resource footprint on the server.
+
+- **Cons**:
+  - **Inefficient for Long-Running Tasks**: In a microservices system with many tasks, constant polling can result in unnecessary load on the server, leading to inefficiencies.
+  - **Delayed Feedback**: Polling introduces delays between status updates, resulting in a suboptimal user experience.
+
+#### **WebSockets for Real-time Updates**:
+- **Pros for Microservices**:
+  - **Real-time Feedback**: Provides immediate updates to the user, which is ideal for scenarios where instant progress tracking is important, such as real-time dashboards or notifications in microservices.
+  - **Efficient for High-Interaction Systems**: WebSockets work well for microservices that require frequent updates and low-latency communication, like chat services or live data streams.
+
+- **Cons**:
+  - **Complex Setup**: WebSockets require an additional layer of infrastructure (e.g., Django Channels, event-driven architecture) and more complex state management, especially in microservices.
+  - **Scalability Challenges**: Managing a large number of WebSocket connections across distributed microservices can be challenging and resource-intensive.
+  - **Persistent Connection Overhead**: WebSockets maintain a persistent connection, which can increase server load, especially when dealing with a large user base.
+
+---
