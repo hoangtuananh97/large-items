@@ -275,6 +275,12 @@ To run the application using Docker-Compose:
    ```
 The application will be accessible at `http://localhost:8080`.
 
+
+### Running Tests
+```
+python manage.py test
+```
+
 ### API Documentation
 
 API documentation is available via Swagger UI:
