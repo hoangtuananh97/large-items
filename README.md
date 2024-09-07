@@ -266,7 +266,26 @@ def process_items(self, items, user_channel_name):
 - `Http2.0` or `Http3.0` can be used to handle multiple requests at the same time.
 
 ---
+### Project
+### Running with Docker
 
+To run the application using Docker-Compose:
+   ```
+   docker-compose up -d --build
+   ```
+The application will be accessible at `http://localhost:8080`.
+
+### API Documentation
+
+API documentation is available via Swagger UI:
+
+1. Run the application
+2. Access Swagger UI at `http://localhost:8080/swagger/`
+
+Here you can explore and test all available API endpoints.
+
+---
+### Considerations and Trade-offs
 ### **Pros and Cons**
 Let's break down the **pros and cons** for each solution discussed in the context of handling long-running tasks, preventing parallel requests, and providing progress feedback.
 

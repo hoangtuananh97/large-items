@@ -32,14 +32,6 @@ LOCK_TIMEOUT = 600
 def process_items_lock(self, items, hashing):
     lock_key = f"user:{hashing}:lock"
 
-    # Try to acquire the lock using Redis
-    is_locked = redis_client.setnx(lock_key, 'locked')
-
-    if not is_locked:
-        # If the lock exists, return immediately to avoid duplicate task submission
-        print("Task already in progress for user")
-        return {'message': 'Task is already in progress', 'status': 'ignored'}
-
     try:
         # Set an expiration on the lock to avoid indefinitely locked tasks
         redis_client.expire(lock_key, LOCK_TIMEOUT)

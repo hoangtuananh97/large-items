@@ -117,6 +117,11 @@ def get_task_status_idempotency(request, task_id):
 
 
 # APIs for lock
+
+# Configure Redis connection using redis-py
+redis_client = redis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB)
+
+
 @csrf_exempt
 @swagger_auto_schema(
     method='post',
@@ -144,7 +149,17 @@ def start_task_lock(request):
         if not items:
             return JsonResponse({'error': 'No items provided'}, status=400)
 
+        # Check or set lock
         hashing = hashlib.sha256(f'{user_id}-{str(items)}'.encode()).hexdigest()
+        lock_key = f"user:{hashing}:lock"
+
+        if redis_client.exists(lock_key):
+            # If the lock exists, return immediately to avoid duplicate task submission
+            print("Task already in progress for user")
+            return JsonResponse({'message': 'Task is already in progress'}, status=200)
+        else:
+            redis_client.setnx(lock_key, 'locked')
+
         # Start Celery task
         task = process_items_lock.apply_async(args=[items, hashing])
 
@@ -157,10 +172,6 @@ def start_task_lock(request):
 
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
-
-
-# Configure Redis connection using redis-py
-redis_client = redis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB)
 
 
 @csrf_exempt
