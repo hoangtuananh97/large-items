@@ -20,7 +20,7 @@ from drf_yasg import openapi
 from drf_yasg.views import get_schema_view
 from rest_framework import permissions
 
-from items.views import start_task, get_task_status
+from items.views import start_task_idempotency, get_task_status_idempotency, start_task_lock, get_task_status_lock
 
 schema_view = get_schema_view(
    openapi.Info(
@@ -37,7 +37,9 @@ urlpatterns = [
     re_path(r'^swagger/$', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
     re_path(r'^redoc/$', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
     path('admin/', admin.site.urls),
-    path('api/start-task/', start_task, name='start_task'),
-    path('api/task-status/<str:task_id>/', get_task_status, name='get_task_status'),
+    path('api/start-task-idempotency/', start_task_idempotency, name='start_task_idempotency'),
+    path('api/task-status-idempotency/<str:task_id>/', get_task_status_idempotency, name='get_task_status_idempotency'),
+    path('api/start-task-lock/', start_task_lock, name='start_task_lock'),
+    path('api/task-status-lock/', get_task_status_lock, name='get_task_status_lock'),
 
 ]

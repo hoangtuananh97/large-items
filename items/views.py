@@ -1,15 +1,16 @@
 import hashlib
 import json
 
+import redis
 from celery.result import AsyncResult
+from django.conf import settings
 from django.core.cache import cache
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
 from rest_framework.decorators import api_view
-
-from .tasks import process_items
+from .tasks import process_items_idempotency, process_items_lock
 
 
 @csrf_exempt
@@ -19,14 +20,15 @@ from .tasks import process_items
     request_body=openapi.Schema(
         type=openapi.TYPE_OBJECT,
         properties={
-            'items': openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Items(type=openapi.TYPE_NUMBER), description='List of items to process'),
+            'items': openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Items(type=openapi.TYPE_NUMBER),
+                                    description='List of items to process'),
             'user_id': openapi.Schema(type=openapi.TYPE_NUMBER, description='User ID')
         }
     ),
     responses={201: 'Task started', 400: 'Invalid input'}
 )
 @api_view(['POST'])
-def start_task(request):
+def start_task_idempotency(request):
     try:
         # Assume this API be validated with a token or other means
         # Parse items from request body
@@ -47,7 +49,7 @@ def start_task(request):
             cache.set(idempotency_key, 'processed', timeout=300)  # Cached for 5m
 
         # Start Celery task
-        task = process_items.apply_async(args=[items, idempotency_key])
+        task = process_items_idempotency.apply_async(args=[items, idempotency_key])
 
         # Return task_id in the response
         return JsonResponse({'task_id': task.id, "message": 'Your task is processing'}, status=202)
@@ -79,7 +81,7 @@ def start_task(request):
     }
 )
 @api_view(['GET'])
-def get_task_status(request, task_id):
+def get_task_status_idempotency(request, task_id):
     try:
         # Retrieve the task by ID
         task = AsyncResult(task_id)
@@ -112,3 +114,137 @@ def get_task_status(request, task_id):
 
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
+
+
+# APIs for lock
+@csrf_exempt
+@swagger_auto_schema(
+    method='post',
+    operation_description="Start a new task",
+    request_body=openapi.Schema(
+        type=openapi.TYPE_OBJECT,
+        properties={
+            'items': openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Items(type=openapi.TYPE_NUMBER),
+                                    description='List of items to process'),
+            'user_id': openapi.Schema(type=openapi.TYPE_NUMBER, description='User ID')
+        }
+    ),
+    responses={201: 'Task started', 400: 'Invalid input'}
+)
+@api_view(['POST'])
+def start_task_lock(request):
+    try:
+        # Assume this API be validated with a token or other means
+        # Parse items from request body
+        body = json.loads(request.body)
+        items = body.get('items', [])
+        # Assume user_id is passed in the request body
+        user_id = body.get('user_id', 0)
+
+        if not items:
+            return JsonResponse({'error': 'No items provided'}, status=400)
+
+        hashing = hashlib.sha256(f'{user_id}-{str(items)}'.encode()).hexdigest()
+        # Start Celery task
+        task = process_items_lock.apply_async(args=[items, hashing])
+
+        # Return task_id in the response
+        return JsonResponse({
+            'task_id': task.id,
+            "hashing": hashing,
+            "message": 'Your task is processing'
+        }, status=202)
+
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+
+# Configure Redis connection using redis-py
+redis_client = redis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB)
+
+
+@csrf_exempt
+@swagger_auto_schema(
+    method='get',
+    manual_parameters=[
+        openapi.Parameter(
+            'hashing', openapi.IN_PATH, description="Hashing", type=openapi.TYPE_STRING,
+        ),
+        openapi.Parameter(
+            'task_id', openapi.IN_PATH, description="Task ID", type=openapi.TYPE_STRING,
+        )
+    ],
+    responses={
+        200: openapi.Response(
+            description="Task status",
+            examples={
+                'application/json': {
+                    "status": "in_progress",
+                    "details": {
+                        "current": 3,
+                        "total": 10
+                    }
+                }
+            }
+        ),
+        404: openapi.Response(
+            description="Task not found",
+            examples={
+                'application/json': {
+                    "status": "not_found"
+                }
+            }
+        ),
+        500: openapi.Response(
+            description="Task failed",
+            examples={
+                'application/json': {
+                    "status": "failed",
+                    "details": "Error details"
+                }
+            }
+        ),
+        200: openapi.Response(
+            description="Task completed",
+            examples={
+                'application/json': {
+                    "status": "completed",
+                    "details": {
+                        "result": "Task result data"
+                    }
+                }
+            }
+        ),
+    }
+)
+@api_view(['GET'])
+def get_task_status_lock(request):
+    hashing = request.GET.get('hashing', '')
+    task_id = request.GET.get('task_id', '')
+    lock_key = f"user:{hashing}:lock"
+
+    task = AsyncResult(task_id)
+    # Check if the task is currently locked (i.e., in progress)
+    if redis_client.exists(lock_key):
+
+        # Check the task state (progress, failure, or success)
+        if task.state == 'PROGRESS':
+            task_info = task.info if task.info else {}
+            return JsonResponse({'status': 'in_progress', 'details': task_info}, status=200)
+
+        elif task.state == 'SUCCESS':
+            task_info = task.result if task.result else {}
+            return JsonResponse({'status': 'completed', 'details': task_info}, status=200)
+
+        elif task.state == 'FAILURE':
+            return JsonResponse({'status': 'failed', 'details': str(task.result)}, status=500)
+
+        else:
+            return JsonResponse({'status': 'unknown', 'details': task.state}, status=200)
+
+    # If no lock exists, return not found status
+    if not redis_client.exists(lock_key) and task.state == 'SUCCESS':
+        task_info = task.result if task.result else {}
+        return JsonResponse({'status': 'completed', 'details': task_info}, status=200)
+
+    return JsonResponse({'status': 'not_found'}, status=404)
