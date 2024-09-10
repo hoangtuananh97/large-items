@@ -1,0 +1,6 @@
+FROM nginx:latest
+
+COPY templates/504.html /usr/share/nginx/html/504.html
+
+# Copy the Nginx configuration file
+COPY nginx.conf /etc/nginx/nginx.conf

@@ -26,7 +26,15 @@ To address these two challenges using Django/Python, we can leverage **Celery** 
 - **Progress Tracking and Immediate Feedback**: 
   - Use Celery's task state to track progress and provide real-time feedback via polling or WebSockets.
   - Use multiple threads or processes to handle multiple tasks concurrently.
+- **Optional - Nginx for timeout**:
+  - Use Nginx as a reverse proxy to handle long-running tasks and avoid the 60-second timeout.
 
+---
+### Issues:
+1. **Long-Running Tasks**:
+![Alt text](images/timeout.png)
+2. **Parallel Requests**:
+- Click multiple times on the button to create multiple requests. `/process-large-items/` API
 ---
 
 ### **Step-by-Step Approach**
@@ -59,38 +67,41 @@ def process_items(self, items):
 
 Before starting the task, check if a similar task is already running for the user. You can implement this using a Redis key (or a database) as a lock.
 
-**Task Locking Example (`views.py`)**:
-```python
-# views.py
-# Redis client to manage locks
-redis_client = redis.Redis(host='localhost', port=6379, db=0)
-
-def start_task(request):
-    user_id = request.user.id
-    lock_key = f"user:{user_id}:lock"
-
-    # Check if the user already has a task running
-    if redis_client.get(lock_key):
-        return JsonResponse({'error': 'A task is already in progress.'}, status=400)
-
-    # Set a lock to prevent duplicate task submissions
-    redis_client.set(lock_key, '1', ex=300)  # Lock expires after 5 minutes
-
-    # Trigger the Celery task
-    items = get_items_for_processing()  # Fetch items to be processed
-    task = process_items.delay(items)
-
-    return JsonResponse({'task_id': task.id, 'message': 'Task started successfully!'})
-```
-
+**Task Locking**:
 - **Redis lock (`redis_client.set()`)**: Sets a lock for the user to prevent duplicate task submissions. The lock expires after a set time (e.g., 5 minutes).
 - **Unlocking**: When the task completes, remove the lock. You can add this to the task's `on_success` or `on_failure` hook.
-- **Let's check detail in `items/views.py`**
-- 
-##### Option 2. Implement idempotency (Using Cache or redis) checks to ensure that the same task is not processed multiple times.
-- I implemented in `items/views.py`. About basically, I used `cache` to store the key of the task. If the key is already in the cache, it will return the result of the task. If not, it will process the task and store the key in the cache.
+- **Let's check detail in `items/vviews.py::start_task_lock`**
+- **Click one time**: 
+![Alt text](images/start-task-lock.png)
 
-##### Option 3. Implement idempotency checks to ensure that the same task is not processed multiple times.
+- **Click multiple times**:
+![Alt text](images/start-task-lock-2.png)
+
+- **Task processing**:
+![Alt text](images/start-task-lock-process.png)
+
+- **Task completed**:
+![Alt text](images/start-task-lock-success.png)
+
+##### Option 2. Implement idempotency (Using Cache or redis) checks to ensure that the same task is not processed multiple times.
+- I implemented in `items/views.py::start_task_idempotency`. About basically, I used `cache` to store the key of the task. If the key is already in the cache, it will return the result of the task. If not, it will process the task and store the key in the cache.
+- **Click one time**: 
+![Alt text](images/start-task-idempotency.png)
+
+- **Click multiple times**:
+![Alt text](images/start-task-idempotency-2.png)
+
+- **Task processing**:
+![Alt text](images/start-task-idempotency-process.png)
+
+- **Task completed**:
+![Alt text](images/start-task-idempotency-sccuess.png)
+
+##### Option 3. Lock row in database to prevent parallel requests
+- We can use `select_for_update` to lock the row in the database. This will prevent parallel requests from updating the same row simultaneously.
+
+
+##### Option 4. Implement idempotency checks to ensure that the same task is not processed multiple times.
 
 To implement idempotency checks in Django to ensure the same task isn't processed multiple times, we'll use the concept of idempotency keys.
 1. **Create a Model for Idempotency Key (`Model.py`)**
@@ -114,9 +125,6 @@ class IdempotencyKey(models.Model):
 - The `key` (to uniquely identify each request) (e.g: UUID,...).
 - The `status` of the task.
 - The `result` of the operation, if it completes successfully.
-
-##### Option 4. Lock row in database to prevent parallel requests
-- We can use `select_for_update` to lock the row in the database. This will prevent parallel requests from updating the same row simultaneously.
 
 2. **Middleware for Idempotency Key (`middleware.py`)**
 We can create a middleware that checks for the presence of an `Idempotency-Key` header in the request. If the key exists, it checks the database for the key's status and returns the appropriate response.
