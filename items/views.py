@@ -1,5 +1,6 @@
 import hashlib
 import json
+import time
 
 import redis
 from celery.result import AsyncResult
@@ -10,7 +11,36 @@ from django.views.decorators.csrf import csrf_exempt
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
 from rest_framework.decorators import api_view
+
 from .tasks import process_items_idempotency, process_items_lock
+
+
+@csrf_exempt
+@swagger_auto_schema(
+    method='post',
+    operation_description="Process large data",
+    request_body=openapi.Schema(
+        type=openapi.TYPE_OBJECT,
+        properties={}
+    ),
+    responses={200: 'Task started', 408: 'Request Timeout', 500: 'Invalid input'}
+)
+@api_view(['POST', "GET"])
+def process_large_data(request):
+    try:
+        # Simulate long running task by looping through 1 million records
+        for i in range(1_000_000):
+            # Simulate processing time for each record
+            time.sleep(0.0001)
+
+            # Print a message every 100,000 records
+            if i % 100_000 == 0:
+                print(f"Processed {i} records...")
+        # If the process completes
+        return JsonResponse({"status": "Process completed"}, status=200)
+
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
 
 
 @csrf_exempt
@@ -20,8 +50,6 @@ from .tasks import process_items_idempotency, process_items_lock
     request_body=openapi.Schema(
         type=openapi.TYPE_OBJECT,
         properties={
-            'items': openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Items(type=openapi.TYPE_NUMBER),
-                                    description='List of items to process'),
             'user_id': openapi.Schema(type=openapi.TYPE_NUMBER, description='User ID')
         }
     ),
@@ -33,15 +61,13 @@ def start_task_idempotency(request):
         # Assume this API be validated with a token or other means
         # Parse items from request body
         body = json.loads(request.body)
-        items = body.get('items', [])
         # Assume user_id is passed in the request body
         user_id = body.get('user_id', 0)
-
-        if not items:
-            return JsonResponse({'error': 'No items provided'}, status=400)
+        if not user_id:
+            return JsonResponse({'error': 'No user provided'}, status=400)
 
         # Generate an idempotency key based on user and items
-        idempotency_key = hashlib.sha256(f'{user_id}-{str(items)}'.encode()).hexdigest()
+        idempotency_key = hashlib.sha256(f'{user_id}'.encode()).hexdigest()
         # Check if the task has already been processed (idempotency check)
         if cache.get(idempotency_key):
             return JsonResponse({'message': 'Your task already processed'}, status=200)
@@ -49,7 +75,7 @@ def start_task_idempotency(request):
             cache.set(idempotency_key, 'processed', timeout=300)  # Cached for 5m
 
         # Start Celery task
-        task = process_items_idempotency.apply_async(args=[items, idempotency_key])
+        task = process_items_idempotency.apply_async(args=[idempotency_key])
 
         # Return task_id in the response
         return JsonResponse({'task_id': task.id, "message": 'Your task is processing'}, status=202)
@@ -129,8 +155,6 @@ redis_client = redis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, d
     request_body=openapi.Schema(
         type=openapi.TYPE_OBJECT,
         properties={
-            'items': openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Items(type=openapi.TYPE_NUMBER),
-                                    description='List of items to process'),
             'user_id': openapi.Schema(type=openapi.TYPE_NUMBER, description='User ID')
         }
     ),
@@ -142,15 +166,13 @@ def start_task_lock(request):
         # Assume this API be validated with a token or other means
         # Parse items from request body
         body = json.loads(request.body)
-        items = body.get('items', [])
         # Assume user_id is passed in the request body
         user_id = body.get('user_id', 0)
-
-        if not items:
-            return JsonResponse({'error': 'No items provided'}, status=400)
+        if not user_id:
+            return JsonResponse({'error': 'No user provided'}, status=400)
 
         # Check or set lock
-        hashing = hashlib.sha256(f'{user_id}-{str(items)}'.encode()).hexdigest()
+        hashing = hashlib.sha256(f'{user_id}'.encode()).hexdigest()
         lock_key = f"user:{hashing}:lock"
 
         if redis_client.exists(lock_key):
@@ -161,7 +183,7 @@ def start_task_lock(request):
             redis_client.setnx(lock_key, 'locked')
 
         # Start Celery task
-        task = process_items_lock.apply_async(args=[items, hashing])
+        task = process_items_lock.apply_async(args=[hashing])
 
         # Return task_id in the response
         return JsonResponse({

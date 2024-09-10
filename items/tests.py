@@ -1,9 +1,9 @@
+import json
+from unittest.mock import patch
+
 from django.test import TestCase
 from django.urls import reverse
 from rest_framework.test import APIClient
-from unittest.mock import patch
-from celery.result import AsyncResult
-import json
 
 
 class TaskAPITestCase(TestCase):
@@ -14,7 +14,7 @@ class TaskAPITestCase(TestCase):
     def test_start_task_idempotency(self, mock_apply_async):
         mock_apply_async.return_value.id = 'test_task_id'
         url = reverse('start_task_idempotency')
-        data = {'items': [1, 2, 3], 'user_id': 1}
+        data = {'user_id': 1}
 
         # Test successful task start
         response = self.client.post(url, data, format='json')
@@ -30,7 +30,7 @@ class TaskAPITestCase(TestCase):
         self.assertEqual(content['message'], 'Your task already processed')
 
         # Test invalid input
-        response = self.client.post(url, {'items': [], 'user_id': 1}, format='json')
+        response = self.client.post(url, {}, format='json')
         self.assertEqual(response.status_code, 400)
 
     @patch('items.views.AsyncResult')
@@ -71,7 +71,7 @@ class TaskAPITestCase(TestCase):
     def test_start_task_lock(self, mock_setnx, mock_exists, mock_apply_async):
         mock_apply_async.return_value.id = 'test_task_id'
         url = reverse('start_task_lock')
-        data = {'items': [1, 2, 3], 'user_id': 1}
+        data = {'user_id': 1}
 
         # Test successful task start
         mock_exists.return_value = False
@@ -90,7 +90,7 @@ class TaskAPITestCase(TestCase):
         self.assertEqual(content['message'], 'Task is already in progress')
 
         # Test invalid input
-        response = self.client.post(url, {'items': [], 'user_id': 1}, format='json')
+        response = self.client.post(url, {}, format='json')
         self.assertEqual(response.status_code, 400)
 
     @patch('items.views.AsyncResult')

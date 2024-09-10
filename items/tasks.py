@@ -7,12 +7,14 @@ from django.core.cache import cache
 
 
 @shared_task(bind=True)
-def process_items_idempotency(self, items, idempotency_key):
+def process_items_idempotency(self, idempotency_key):
     # Process the items
-    total_items = len(items)
-    for i, item in enumerate(items):
-        time.sleep(2)  # Simulate time taken to process each item
-        self.update_state(state='PROGRESS', meta={'current': i + 1, 'total': total_items})
+    total_items = 1_000_000
+    for i in range(total_items):
+        time.sleep(0.0001)
+
+        if i % 100_000 == 0:
+            self.update_state(state='PROGRESS', meta={'current': i, 'total': total_items})
 
     # Mark task as completed in Redis cache to prevent reprocessing
     # cache.set(idempotency_key, 'completed', timeout=300)  # Cached for 5m
@@ -29,18 +31,18 @@ LOCK_TIMEOUT = 600
 
 
 @shared_task(bind=True)
-def process_items_lock(self, items, hashing):
+def process_items_lock(self, hashing):
     lock_key = f"user:{hashing}:lock"
 
     try:
         # Set an expiration on the lock to avoid indefinitely locked tasks
         redis_client.expire(lock_key, LOCK_TIMEOUT)
+        total_items = 1_000_000
+        for i in range(total_items):
+            time.sleep(0.0001)
 
-        # Simulate the task processing
-        total_items = len(items)
-        for i, item in enumerate(items):
-            time.sleep(2)  # Simulate time taken to process each item
-            self.update_state(state='PROGRESS', meta={'current': i + 1, 'total': total_items})
+            if i % 100_000 == 0:
+                self.update_state(state='PROGRESS', meta={'current': i, 'total': total_items})
 
         # Task is complete
         return {'message': 'Task completed', 'total_items': total_items}

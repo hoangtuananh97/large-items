@@ -20,7 +20,8 @@ from drf_yasg import openapi
 from drf_yasg.views import get_schema_view
 from rest_framework import permissions
 
-from items.views import start_task_idempotency, get_task_status_idempotency, start_task_lock, get_task_status_lock
+from items.views import start_task_idempotency, get_task_status_idempotency, start_task_lock, get_task_status_lock, \
+    process_large_data
 
 schema_view = get_schema_view(
    openapi.Info(
@@ -37,8 +38,14 @@ urlpatterns = [
     re_path(r'^swagger/$', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
     re_path(r'^redoc/$', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
     path('admin/', admin.site.urls),
+
+    # API endpoints for processing large data time out (60s)
+    path('process-large-items/', process_large_data, name='process_large_items'),
+
+    # API endpoints for idempotency
     path('api/start-task-idempotency/', start_task_idempotency, name='start_task_idempotency'),
     path('api/task-status-idempotency/<str:task_id>/', get_task_status_idempotency, name='get_task_status_idempotency'),
+    # API endpoints for lock
     path('api/start-task-lock/', start_task_lock, name='start_task_lock'),
     path('api/task-status-lock/', get_task_status_lock, name='get_task_status_lock'),
 
