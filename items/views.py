@@ -25,7 +25,7 @@ from .tasks import process_items_idempotency, process_items_lock
     ),
     responses={200: 'Task started', 408: 'Request Timeout', 500: 'Invalid input'}
 )
-@api_view(['POST', "GET"])
+@api_view(['POST'])
 def process_large_data(request):
     try:
         # Simulate long running task by looping through 1 million records
